@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"reflect"
 	"github.com/pborman/uuid"
+	"strings"
 )
 
 type Location struct { //type like class in java
@@ -187,8 +188,9 @@ func handlerSearch(w http.ResponseWriter, r *http.Request) {
 		p := item.(Post) // p = (Post) item
 		fmt.Printf("Post by %s: %s at lat %v and lon %v\n", p.User, p.Message, p.Location.Lat, p.Location.Lon)
 		// TODO(student homework): Perform filtering based on keywords such as web spam etc.
-		ps = append(ps, p)
-
+		if !containsFilteredWords(&p.Message) {
+			ps = append(ps, p)
+		}
 	}
 	js, err := json.Marshal(ps)
 	if err != nil {
@@ -221,4 +223,17 @@ func handlerSearch(w http.ResponseWriter, r *http.Request) {
 	//
 	//w.Header().Set("Content-Type", "application/json") //返回的時候告訴瀏覽器這是json object
 	//w.Write(js) //因為已經是byte array所以可以直接寫回response裡去
+}
+
+func containsFilteredWords(s *string) bool {
+	filteredWords := []string{
+		"fuck",
+		"200",
+	}
+	for _, word := range filteredWords {
+		if strings.Contains(*s, word) {
+			return true
+		}
+	}
+	return false
 }
