@@ -1,2 +1,2 @@
-runtime: go //告訴GAP我們的程序該如何運行
-env: flex   //用flex這個plan，系統就會幫我們自動分配所需要的網路資源或硬/軟件資源
+runtime: go
+env: flex
