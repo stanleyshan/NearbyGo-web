@@ -10,10 +10,15 @@ import (
 	"reflect"
 	"github.com/pborman/uuid"
 	"strings"
-	"context"
-        "cloud.google.com/go/bigtable"
+	//"context"
+        //"cloud.google.com/go/bigtable"
+	"github.com/auth0/go-jwt-middleware"
+	"github.com/dgrijalva/jwt-go"
+	"github.com/gorilla/mux"
 
 )
+
+var mySigningKey = []byte("secret")  ////這是你的private key，不能到github
 
 type Location struct { //type like class in java
 	Lat float64 `json:"lat"`
@@ -72,10 +77,30 @@ func main() {
 		}
 	}
 
-	fmt.Println("started-service")
-	http.HandleFunc("/post", handlerPost) //如果發來的帖子是在post這個url底下，就用handlerPost這個函數去處理
-	http.HandleFunc("/search", handlerSearch)
-	log.Fatal(http.ListenAndServe(":8080", nil)) //start 這個service，並且在8080端口監聽他  //Fatal是如果返回是error的話，就返回一個Fatal級別的log
+	fmt.Println("Started service successfully")
+
+	// Here we are instantiating the gorilla/mux router
+	r := mux.NewRouter()  //加一個中間層，讓我們可以檢測jwt這個token
+
+	var jwtMiddleware = jwtmiddleware.New(jwtmiddleware.Options{
+		ValidationKeyGetter: func(token *jwt.Token) (interface{}, error) {
+			return mySigningKey, nil
+		},
+		SigningMethod: jwt.SigningMethodHS256,
+	})
+
+	r.Handle("/post", jwtMiddleware.Handler(http.HandlerFunc(handlerPost))).Methods("POST")
+	r.Handle("/search", jwtMiddleware.Handler(http.HandlerFunc(handlerSearch))).Methods("GET")
+	r.Handle("/login", http.HandlerFunc(loginHandler)).Methods("POST")
+	r.Handle("/signup", http.HandlerFunc(signupHandler)).Methods("POST")
+
+	http.Handle("/", r)
+	log.Fatal(http.ListenAndServe(":8080", nil))
+
+	//fmt.Println("started-service")
+	//http.HandleFunc("/post", handlerPost) //如果發來的帖子是在post這個url底下，就用handlerPost這個函數去處理
+	//http.HandleFunc("/search", handlerSearch)
+	//log.Fatal(http.ListenAndServe(":8080", nil)) //start 這個service，並且在8080端口監聽他  //Fatal是如果返回是error的話，就返回一個Fatal級別的log
 
 	////會卡在log?
 	//m := make(map[string]bool) //key: string value: bool
@@ -94,6 +119,68 @@ func main() {
 }
 
 func handlerPost(w http.ResponseWriter, r *http.Request) { //1.22.00   //r *http.Request 收到從29行傳來的資料
+	// Parse from body of request to get a json object.
+	fmt.Println("Received one post request")
+	decoder := json.NewDecoder(r.Body)
+	var p Post
+	if err := decoder.Decode(&p); err != nil {
+		panic(err)
+		return
+	}
+
+	// Create a client
+	es_client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false))
+	if err != nil {
+		panic(err)
+		return
+	}
+
+	id := uuid.New()
+	user := r.Context().Value("user")
+	claims := user.(*jwt.Token).Claims
+	username := claims.(jwt.MapClaims)["username"]
+	p.User = username.(string)
+
+	// Save it to index
+	_, err = es_client.Index().
+		Index(INDEX).
+		Type(TYPE).
+		Id(id).
+		BodyJson(p).
+		Refresh(true).
+		Do()
+	if err != nil {
+		panic(err)
+		return
+	}
+
+	fmt.Printf("Post is saved to Index: %s\n", p.Message)
+	/*
+	ctx := context.Background()
+	bt_client, err := bigtable.NewClient(ctx, PROJECT_ID, BT_INSTANCE)
+	if err != nil {
+		panic(err)
+		return
+	}
+
+	tbl := bt_client.Open("post")
+	mut := bigtable.NewMutation()
+	t := bigtable.Now()
+	mut.Set("post", "user", t, []byte(p.User))
+	mut.Set("post", "message", t, []byte(p.Message))
+	mut.Set("location", "lat", t, []byte(strconv.FormatFloat(p.Location.Lat, 'f', -1, 64)))
+	mut.Set("location", "lon", t, []byte(strconv.FormatFloat(p.Location.Lon, 'f', -1, 64)))
+
+	err = tbl.Apply(ctx, id, mut)
+	if err != nil {
+		panic(err)
+		return
+	}
+	fmt.Printf("Post is saved to BigTable: %s\n", p.Message)
+	*/
+}
+
+	/*
 	// Parse from body of request to get a json object.
 	fmt.Println("Received one post request")
 	decoder := json.NewDecoder(r.Body) //r.Body: postman 裡面 post的body
@@ -136,8 +223,9 @@ func handlerPost(w http.ResponseWriter, r *http.Request) { //1.22.00   //r *http
 	}
 	fmt.Printf("Post is saved to BigTable: %s\n", p.Message)
 
-}
+}*/
 
+/*
 // Save a post to ElasticSearch
 func saveToES(p *Post, id string) {
 	// Create a client
@@ -162,7 +250,7 @@ func saveToES(p *Post, id string) {
 
 	fmt.Printf("Post is saved to Index: %s\n", p.Message)
 }
-
+*/
 
 
 func handlerSearch(w http.ResponseWriter, r *http.Request) {
