@@ -15,7 +15,10 @@ import (
 	"github.com/auth0/go-jwt-middleware"
 	"github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/mux"
+	"context"
+	"cloud.google.com/go/storage"
 
+	"io"
 )
 
 var mySigningKey = []byte("secret")  ////這是你的private key，不能到github
@@ -30,6 +33,7 @@ type Post struct {
 	User     string `json:"user"`
 	Message  string  `json:"message"`
 	Location Location `json:"location"`
+	Url    string `json:"url"`
 }
 
 const (
@@ -41,6 +45,9 @@ const (
 	BT_INSTANCE = "around-post"
 	// Needs to update this URL if you deploy it to cloud.
 	ES_URL = "http://35.231.117.16:9200"
+	// Needs to update this bucket based on your gcs bucket name.
+	BUCKET_NAME = "post-images-194517"
+
 )
 
 func main() {
@@ -118,7 +125,7 @@ func main() {
 
 }
 
-func handlerPost(w http.ResponseWriter, r *http.Request) { //1.22.00   //r *http.Request 收到從29行傳來的資料
+/*func handlerPost(w http.ResponseWriter, r *http.Request) { //1.22.00   //r *http.Request 收到從29行傳來的資料
 	// Parse from body of request to get a json object.
 	fmt.Println("Received one post request")
 	decoder := json.NewDecoder(r.Body)
@@ -178,7 +185,7 @@ func handlerPost(w http.ResponseWriter, r *http.Request) { //1.22.00   //r *http
 	}
 	fmt.Printf("Post is saved to BigTable: %s\n", p.Message)
 	*/
-}
+//} //127行
 
 	/*
 	// Parse from body of request to get a json object.
@@ -225,7 +232,7 @@ func handlerPost(w http.ResponseWriter, r *http.Request) { //1.22.00   //r *http
 
 }*/
 
-/*
+
 // Save a post to ElasticSearch
 func saveToES(p *Post, id string) {
 	// Create a client
@@ -250,7 +257,7 @@ func saveToES(p *Post, id string) {
 
 	fmt.Printf("Post is saved to Index: %s\n", p.Message)
 }
-*/
+
 
 
 func handlerSearch(w http.ResponseWriter, r *http.Request) {
@@ -354,4 +361,99 @@ func containsFilteredWords(s *string) bool {
 		}
 	}
 	return false
+}
+
+//Lesson54 Google Cloud Storage
+func handlerPost(w http.ResponseWriter, r *http.Request) {
+	// Other codes
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
+
+
+	// 32 << 20 is the maxMemory param for ParseMultipartForm, equals to 32MB (1MB = 1024 * 1024 bytes = 2^20 bytes)
+	// After you call ParseMultipartForm, the file will be saved in the server memory with maxMemory size.
+	// If the file size is larger than maxMemory, the rest of the data will be saved in a system temporary file.
+	r.ParseMultipartForm(32 << 20)
+
+	// Parse from form data.
+	fmt.Printf("Received one post request %s\n", r.FormValue("message"))
+	lat, _ := strconv.ParseFloat(r.FormValue("lat"), 64)
+	lon, _ := strconv.ParseFloat(r.FormValue("lon"), 64)
+	p := &Post{
+		User:    "1111",
+		Message: r.FormValue("message"),
+		Location: Location{
+			Lat: lat,
+			Lon: lon,
+		},
+	}
+
+	id := uuid.New()
+
+	file, _, err := r.FormFile("image")
+	if err != nil {
+		http.Error(w, "Image is not available", http.StatusInternalServerError)
+		fmt.Printf("Image is not available %v.\n", err)
+		return
+	}
+	defer file.Close()
+
+	ctx := context.Background()
+
+	// replace it with your real bucket name.
+	_, attrs, err := saveToGCS(ctx, file, BUCKET_NAME, id)
+	if err != nil {
+		http.Error(w, "GCS is not setup", http.StatusInternalServerError)
+		fmt.Printf("GCS is not setup %v\n", err)
+		return
+	}
+
+	// Update the media link after saving to GCS.
+	p.Url = attrs.MediaLink
+
+	// Save to ES.
+	saveToES(p, id)
+
+	// Save to BigTable.
+	//saveToBigTable(p, id)
+
+}
+
+func saveToGCS(ctx context.Context, r io.Reader, bucket, name string) (*storage.ObjectHandle, *storage.ObjectAttrs, error) {
+	// Student questions
+
+	//Creates a client.
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer client.Close() //函數完成後，不管出錯與否，都要把資源關閉
+
+	//Creates a Bucket instance.
+	bh := client.Bucket(bucket)
+	// Next check if the bucket exists
+	if _, err = bh.Attrs(ctx); err != nil {
+		return nil, nil, err //oblecthandle, objectattribute, error //go語言出錯返回的寫法
+	}
+
+	//把內容寫進Bucket
+	obj := bh.Object(name)    //獲得object的內容
+	w := obj.NewWriter(ctx)   //創建新的writter
+	if _, err := io.Copy(w, r); err != nil {   //拷貝文件
+		return nil, nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, nil, err
+	}
+
+	//設定存取權限
+	if err := obj.ACL().Set(ctx, storage.AllUsers, storage.RoleReader); err != nil { //讓所有用戶都有可讀的權限
+		return nil, nil, err
+	}
+
+	attrs, err := obj.Attrs(ctx)
+	fmt.Printf("Post is saved to GCS: %s\n", attrs.MediaLink) //輸出link告訴我們文件上傳到哪裡去了
+	return obj, attrs, err
+
 }
